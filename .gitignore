@@ -49,5 +49,4 @@ dist/
 # ---- Project specific ----
 generated-code-gemini.py
 generated-code-*.py
-
 requirements.txt
