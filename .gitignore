@@ -1,0 +1,53 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ---- Logs ----
+*.log
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+
+# ---- VS Code ----
+.vscode/
+
+# ---- Cache folders ----
+.cache/
+.idea/
+*.egg-info/
+build/
+dist/
+
+# ---- Environment Variables ----
+.env
+*.env
+
+# ---- Large or temporary files ----
+*.sqlite3
+*.db
+*.bak
+*.tmp
+
+# Prevent large files (GitHub blocks >100MB)
+*.mp4
+*.mov
+*.zip
+*.tar
+*.gz
+
+# ---- Project specific ----
+generated-code-gemini.py
+generated-code-*.py
+
+requirements.txt
