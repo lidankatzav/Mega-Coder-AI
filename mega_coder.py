@@ -1,6 +1,7 @@
 import os
 import random
 import subprocess
+import time
 from dotenv import load_dotenv
 import google.generativeai as genai
 from colorama import init, Fore, Style
@@ -40,21 +41,21 @@ def show_menu():
 
 
 def run_generated_code():
-    """Runs the generated python file to verify correct execution."""
     try:
+        start = time.time()
         result = subprocess.run(
             ["python3", "generated-code-gemini.py"],
             capture_output=True,
             text=True
         )
-        return result.returncode, result.stdout, result.stderr
+        end = time.time()
+        return result.returncode, result.stdout, result.stderr, (end - start) * 1000
 
     except Exception as e:
-        return -1, "", str(e)
+        return -1, "", str(e), 0
 
 
 def corrupt_code_randomly(code: str) -> str:
-    """Randomly corrupts one character in the code ~30% of the time."""
     if random.random() < 0.3:
         idx = random.randint(0, len(code) - 1)
         corrupted = code[:idx] + "#" + code[idx + 1:]
@@ -64,22 +65,17 @@ def corrupt_code_randomly(code: str) -> str:
 
 
 def generate_program_with_gemini(description, model):
-    """Call Gemini Flash-Lite with a prompt that forces runnable code."""
-
     prompt = f"""
 Write a Python program based on the following description:
 
 \"\"\"{description}\"\"\"
 
 Important requirements:
-- The program must NOT use input() — no user interaction.
-- The program must NOT use command line arguments.
-- The program must be fully runnable as-is.
-- The code must be valid Python.
-- Add ASSERTS inside the program to verify correctness of its logic.
-- Do NOT include explanations — return ONLY Python code.
-
-Generate ONLY Python code below:
+- The program must NOT use input()
+- The program must NOT use command line arguments
+- The code must be fully runnable
+- Include ASSERTS for correctness
+- Return ONLY Python code
 """
 
     info("\nSending request to Gemini 2.5 Flash-Lite...\n")
@@ -97,8 +93,6 @@ Generate ONLY Python code below:
 
 
 def fix_code_with_gemini(model, code, error_msg):
-    """Send failing code + error back to Gemini for fixing."""
-
     prompt = f"""
 Fix the following Python code. It failed when executed.
 
@@ -106,10 +100,10 @@ Fix the following Python code. It failed when executed.
 {code}
 --- CODE END ---
 
-The error message was:
+Error message:
 {error_msg}
 
-Fix all issues completely. Return ONLY valid Python code. No explanations.
+Fix everything completely. Return ONLY valid Python code.
 """
 
     response = model.generate_content(prompt)
@@ -122,6 +116,25 @@ Fix all issues completely. Return ONLY valid Python code. No explanations.
 
     return fixed
 
+def optimize_code_with_gemini(model, code):
+    prompt = f"""
+The following Python code runs correctly and contains ASSERTS.
+Optimize it to run FASTER but keep all asserts EXACTLY as they are.
+
+Return ONLY optimized Python code.
+
+--- CODE START ---
+{code}
+--- CODE END ---
+"""
+
+    response = model.generate_content(prompt)
+    optimized = response.text.replace("```python", "").replace("```", "").strip()
+
+    with open("generated-code-gemini.py", "w") as f:
+        f.write(optimized)
+
+    return optimized
 
 def main():
     configure_gemini()
@@ -140,12 +153,27 @@ def main():
 
             for attempt in range(1, 6):
                 info(f"\nRunning attempt {attempt}...")
-                return_code, out, err = run_generated_code()
+                return_code, out, err, before_time = run_generated_code()
 
                 if return_code == 0:
                     print(Fore.GREEN + "\n===== PROGRAM OUTPUT =====")
                     print(out)
                     success("\nThe generated code executed successfully!")
+
+                    info("\nRequesting optimized faster version of the code...")
+                    optimize_code_with_gemini(model, code)
+
+                    info("Running optimized version...")
+                    rc2, out2, err2, after_time = run_generated_code()
+
+                    if rc2 == 0 and after_time < before_time:
+                        success(
+                            f"\nCode running time optimized! "
+                            f"It now runs in {after_time:.2f} ms, while before it was {before_time:.2f} ms"
+                        )
+                    else:
+                        warn("\nOptimization did not improve the running time.")
+
                     return
 
                 error("\nProgram failed!")
