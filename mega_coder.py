@@ -1,4 +1,5 @@
 import os
+import random
 import subprocess
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -30,6 +31,7 @@ def configure_gemini():
     genai.configure(api_key=gemini_key)
     success("Gemini configured successfully!")
 
+
 def show_menu():
     print(Fore.MAGENTA + "\nI'm Mega Coder. What would you like me to do today?\n")
     print("1. Develop a python program.")
@@ -45,22 +47,23 @@ def run_generated_code():
             capture_output=True,
             text=True
         )
-
-        info("\n===== PROGRAM OUTPUT =====")
-        print(result.stdout)
-
-        if result.stderr:
-            warn("===== PROGRAM ERRORS =====")
-            print(result.stderr)
-
-        return result.returncode == 0
+        return result.returncode, result.stdout, result.stderr
 
     except Exception as e:
-        error(f"[ERROR] Failed running generated code: {e}")
-        return False
+        return -1, "", str(e)
 
 
-def generate_program_with_gemini(description):
+def corrupt_code_randomly(code: str) -> str:
+    """Randomly corrupts one character in the code ~30% of the time."""
+    if random.random() < 0.3:
+        idx = random.randint(0, len(code) - 1)
+        corrupted = code[:idx] + "#" + code[idx + 1:]
+        warn("[DEBUG] Random corruption injected into generated code.")
+        return corrupted
+    return code
+
+
+def generate_program_with_gemini(description, model):
     """Call Gemini Flash-Lite with a prompt that forces runnable code."""
 
     prompt = f"""
@@ -73,7 +76,7 @@ Important requirements:
 - The program must NOT use command line arguments.
 - The program must be fully runnable as-is.
 - The code must be valid Python.
-- Add ASSERTS inside the program to verify correctness.
+- Add ASSERTS inside the program to verify correctness of its logic.
 - Do NOT include explanations — return ONLY Python code.
 
 Generate ONLY Python code below:
@@ -81,13 +84,10 @@ Generate ONLY Python code below:
 
     info("\nSending request to Gemini 2.5 Flash-Lite...\n")
 
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
     response = model.generate_content(prompt)
+    code = response.text.replace("```python", "").replace("```", "").strip()
 
-    code = response.text
-
-    if "```" in code:
-        code = code.replace("```python", "").replace("```", "").strip()
+    code = corrupt_code_randomly(code)
 
     with open("generated-code-gemini.py", "w") as f:
         f.write(code)
@@ -96,8 +96,37 @@ Generate ONLY Python code below:
     return code
 
 
+def fix_code_with_gemini(model, code, error_msg):
+    """Send failing code + error back to Gemini for fixing."""
+
+    prompt = f"""
+Fix the following Python code. It failed when executed.
+
+--- CODE START ---
+{code}
+--- CODE END ---
+
+The error message was:
+{error_msg}
+
+Fix all issues completely. Return ONLY valid Python code. No explanations.
+"""
+
+    response = model.generate_content(prompt)
+    fixed = response.text.replace("```python", "").replace("```", "").strip()
+
+    fixed = corrupt_code_randomly(fixed)
+
+    with open("generated-code-gemini.py", "w") as f:
+        f.write(fixed)
+
+    return fixed
+
+
 def main():
     configure_gemini()
+
+    model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
     while True:
         show_menu()
@@ -107,15 +136,27 @@ def main():
             description = input("\nDescribe me which python program you want me to develop:\n\n> ")
 
             info("\nGenerating program...")
-            generate_program_with_gemini(description)
+            code = generate_program_with_gemini(description, model)
 
-            info("\nRunning generated program...")
-            ok = run_generated_code()
+            for attempt in range(1, 6):
+                info(f"\nRunning attempt {attempt}...")
+                return_code, out, err = run_generated_code()
 
-            if ok:
-                success("\nThe generated code executed successfully!")
-            else:
-                error("\nThe generated program failed. Fixing logic will be added later.\n")
+                if return_code == 0:
+                    print(Fore.GREEN + "\n===== PROGRAM OUTPUT =====")
+                    print(out)
+                    success("\nThe generated code executed successfully!")
+                    return
+
+                error("\nProgram failed!")
+                print(err)
+
+                if attempt == 5:
+                    error("\nSorry master, I have failed you. I can’t create this program without issues.")
+                    return
+
+                info("\nAsking Gemini to fix the code...")
+                code = fix_code_with_gemini(model, code, err)
 
             break
 
