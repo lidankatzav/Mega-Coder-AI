@@ -209,6 +209,45 @@ Rules:
         success("\nAmazing. No lint errors/warnings.\n")
 
 
+# ---------- Auto Documentation Generator ----------
+def generate_documentation_with_gemini(model, code: str):
+    prompt = f"""
+You are a senior software engineer. The following Python code was generated and executed successfully:
+
+--- CODE START ---
+{code}
+--- CODE END ---
+
+Your task:
+1. Generate clear and professional documentation for this code.
+2. Include:
+   - High-level explanation of what the program does
+   - Function-by-function description
+   - Explanation of ASSERT logic
+   - Key assumptions the program makes
+   - Edge cases the program handles or fails to handle
+   - Recommended improvements or best practices
+   - A short "How to use this program" section
+
+3. Do NOT return code. Only documentation text.
+4. Documentation must be readable, well structured, and helpful.
+"""
+
+    try:
+        response = model.generate_content(prompt)
+        documentation = response.text.strip()
+
+        with open("generated-doc-gemini.txt", "w") as f:
+            f.write(documentation)
+
+        success("\nDocumentation written to generated-doc-gemini.txt\n")
+        return documentation
+
+    except Exception as e:
+        error(f"Failed to generate documentation: {e}")
+        return ""
+
+
 # ---------- GitIngest Integration ----------
 def handle_github_option():
     info("\nGive me the full url of a public Github repository:\n")
@@ -361,6 +400,7 @@ def main():
                             warn("Optimization didn't improve speed.")
 
                         lint_and_fix_with_gemini(model)
+                        generate_documentation_with_gemini(model, code)
                         break
 
                     error("Program failed!")
