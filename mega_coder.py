@@ -6,29 +6,31 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from colorama import init, Fore, Style
 from tqdm import tqdm
+from gitingest import ingest
 
 init(autoreset=True)
 
 
-def info(msg: str) -> None:
+# ---------- Color helpers ----------
+def info(msg: str):
     print(Fore.CYAN + msg + Style.RESET_ALL)
 
 
-def warn(msg: str) -> None:
+def warn(msg: str):
     print(Fore.YELLOW + msg + Style.RESET_ALL)
 
 
-def error(msg: str) -> None:
+def error(msg: str):
     print(Fore.RED + msg + Style.RESET_ALL)
 
 
-def success(msg: str) -> None:
+def success(msg: str):
     print(Fore.GREEN + msg + Style.RESET_ALL)
 
 
-def configure_gemini() -> None:
+# ---------- Gemini initialization ----------
+def configure_gemini():
     load_dotenv()
-
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
         error("ERROR: GEMINI_API_KEY missing from .env")
@@ -38,37 +40,33 @@ def configure_gemini() -> None:
     success("Gemini configured successfully!")
 
 
-def show_menu() -> None:
+# ---------- Menu ----------
+def show_menu():
     print(Fore.MAGENTA + "\nI'm Mega Coder. What would you like me to do today?\n")
     print("1. Develop a python program.")
     print("2. Fix/change something in a Github repository.")
     print("3. Look at my screen and give me realtime coding tips.\n")
 
 
+# ---------- Code Execution ----------
 def run_generated_code():
-    """
-    Runs the generated python file and measures its runtime in milliseconds.
-    Returns (return_code, stdout, stderr, elapsed_ms).
-    """
     try:
         start = time.time()
         result = subprocess.run(
             ["python3", "generated-code-gemini.py"],
             capture_output=True,
-            text=True,
+            text=True
         )
         end = time.time()
-        elapsed_ms = (end - start) * 1000.0
+        elapsed_ms = (end - start) * 1000
         return result.returncode, result.stdout, result.stderr, elapsed_ms
+
     except Exception as e:
         return -1, "", str(e), 0.0
 
 
+# ---------- Random corruption ----------
 def corrupt_code_randomly(code: str) -> str:
-    """
-    Randomly corrupts one character in the code ~30% of the time.
-    Used only on initial generation to force failures per assignment.
-    """
     if random.random() < 0.3 and code:
         idx = random.randint(0, len(code) - 1)
         corrupted = code[:idx] + "#" + code[idx + 1:]
@@ -77,198 +75,191 @@ def corrupt_code_randomly(code: str) -> str:
     return code
 
 
+# ---------- Program generation ----------
 def generate_program_with_gemini(description: str, model) -> str:
-    """
-    Ask Gemini to generate initial Python program with ASSERTS.
-    Writes code into generated-code-gemini.py and returns it as string.
-    """
-
     prompt = f"""
 Write a Python program based on the following description:
 
 \"\"\"{description}\"\"\"
 
 Important requirements:
-- The program must NOT use input()
-- The program must NOT use command line arguments
-- The code must be fully runnable as-is
-- Include ASSERTS for correctness (so failures raise exceptions)
-- Return ONLY valid Python code. No explanations, no comments, no markdown fences.
+- No input()
+- No command line arguments
+- Fully runnable as-is
+- Include ASSERT statements for correctness
+- Return ONLY valid Python code (no markdown)
 """
 
-    info("\nSending request to Gemini 2.5 Flash-Lite for initial code...\n")
+    info("\nRequesting initial code from Gemini 2.5 Flash-Lite...\n")
 
     response = model.generate_content(prompt)
     code = response.text.replace("```python", "").replace("```", "").strip()
 
+    # initial corruption only
     code = corrupt_code_randomly(code)
 
     with open("generated-code-gemini.py", "w") as f:
         f.write(code)
 
-    success("[SUCCESS] Initial code written to generated-code-gemini.py\n")
+    success("[SUCCESS] Code written to generated-code-gemini.py\n")
     return code
 
 
+# ---------- Runtime fix ----------
 def fix_code_with_gemini(model, code: str, error_msg: str) -> str:
-    """
-    Send failing code + runtime error back to Gemini for fixing.
-    No random corruption here – goal is to stabilize runtime correctness.
-    """
-
     prompt = f"""
-The following Python program failed when executed. Fix it so that it runs
-successfully and keeps the same intended behavior and ASSERTS.
+The following Python program failed when executed. Fix it while keeping the logic + asserts.
 
 --- CODE START ---
 {code}
 --- CODE END ---
 
-The error message when running it was:
+Runtime Error:
 {error_msg}
 
-Fix all runtime issues. Return ONLY valid Python code. No explanations, no markdown.
+Return ONLY valid Python code. No markdown, no explanations.
 """
-
     response = model.generate_content(prompt)
     fixed = response.text.replace("```python", "").replace("```", "").strip()
 
     with open("generated-code-gemini.py", "w") as f:
         f.write(fixed)
 
-    info("A runtime-fixed version of the code was written to generated-code-gemini.py")
     return fixed
 
 
+# ---------- Optimization ----------
 def optimize_code_with_gemini(model, code: str) -> str:
-    """
-    Ask Gemini to generate a faster version of code, preserving ASSERTS exactly.
-    Writes optimized code into file and returns it.
-    """
-
     prompt = f"""
-The following Python code runs correctly and contains ASSERTS that validate its logic.
-Optimize the code to run FASTER, but keep ALL ASSERTS EXACTLY as they are.
-
-- Do not remove or change the ASSERT statements.
-- Keep the same behavior and outputs.
-- Focus on algorithmic and structural optimizations.
-
-Return ONLY the optimized Python code. No explanations, no markdown.
+Optimize the following Python code to run FASTER.
+Do NOT modify any ASSERT statements. Keep same behavior.
 
 --- CODE START ---
 {code}
 --- CODE END ---
+
+Return ONLY Python code.
 """
-
-    info("\nRequesting optimized (faster) version of the code from Gemini...\n")
-
     response = model.generate_content(prompt)
     optimized = response.text.replace("```python", "").replace("```", "").strip()
 
     with open("generated-code-gemini.py", "w") as f:
         f.write(optimized)
 
-    success("Optimized code written to generated-code-gemini.py")
     return optimized
 
 
-def run_pylint_on_file(file_path: str = "generated-code-gemini.py"):
-    """
-    Runs pylint via `python3 -m pylint` on the generated file.
-    Returns (has_issues: bool, full_report: str).
-    """
-    cmd = [
-        "python3",
-        "-m",
-        "pylint",
-        file_path,
-        "--score=n",
-    ]
-
+# ---------- Pylint ----------
+def run_pylint_on_file(filepath="generated-code-gemini.py"):
+    cmd = ["python3", "-m", "pylint", filepath, "--score=n"]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    output = (result.stdout or "") + "\n" + (result.stderr or "")
-
+    output = (result.stdout or "") + (result.stderr or "")
     has_issues = result.returncode != 0
-
     return has_issues, output.strip()
 
 
-def lint_and_fix_with_gemini(model, max_rounds: int = 3) -> None:
-    """
-    Runs pylint up to max_rounds times, using a single tqdm progress bar.
-    On each round with issues, sends the code + pylint report to Gemini for fixes.
-    Overwrites the file with improved code each time.
+def lint_and_fix_with_gemini(model, max_rounds=3):
+    info("\nStarting pylint lint check...\n")
 
-    At the end:
-      - If no issues: print "Amazing. No lint errors/warnings"
-      - Else: print "There are still lint errors/warnings"
-    """
-
-    info("\nStarting lint check & auto-fix using pylint + Gemini...\n")
-
-    file_path = "generated-code-gemini.py"
-
-    for round_idx in tqdm(
-        range(1, max_rounds + 1),
-        desc="Lint Fixing Progress",
-        unit="round",
-    ):
-        has_issues, report = run_pylint_on_file(file_path)
+    for round_idx in tqdm(range(1, max_rounds + 1), desc="Lint Fixing Progress"):
+        has_issues, report = run_pylint_on_file()
 
         if not has_issues:
             success("\nAmazing. No lint errors/warnings.\n")
             return
 
-        warn(f"\nLint issues detected (round {round_idx}/{max_rounds}). Fixing with Gemini...\n")
+        warn(f"Lint issues detected (round {round_idx}/{max_rounds}). Fixing...\n")
 
-        with open(file_path, "r") as f:
-            current_code = f.read()
+        with open("generated-code-gemini.py", "r") as f:
+            code = f.read()
 
-        lint_prompt = f"""
-The following Python code runs correctly but has lint warnings/errors according to pylint.
-
-Your task:
-- Fix ALL lint warnings and errors reported by pylint.
-- Keep the SAME behavior and outputs.
-- KEEP ALL ASSERT statements (do not remove or weaken them).
-- Improve variable names, add missing docstrings if needed, remove unused variables,
-  and fix formatting according to standard Python conventions.
+        prompt = f"""
+Fix ALL pylint issues in the following code.
 
 Here is the code:
-
 --- CODE START ---
-{current_code}
+{code}
 --- CODE END ---
 
-Here is the pylint report (these are the issues you MUST fix):
-
+Here is the pylint report (MUST fix everything):
 --- PYLINT REPORT START ---
 {report}
 --- PYLINT REPORT END ---
 
-Return ONLY the fully fixed Python code. No explanations, no comments about changes,
-no markdown. Just valid Python code.
+Rules:
+- Fix every lint warning/error
+- Keep ASSERT statements unchanged
+- Keep program behavior unchanged
+- Return ONLY Python code
 """
+        response = model.generate_content(prompt)
+        fixed = response.text.replace("```python", "").replace("```", "").strip()
 
-        response = model.generate_content(lint_prompt)
-        fixed_code = response.text.replace("```python", "").replace("```", "").strip()
+        with open("generated-code-gemini.py", "w") as f:
+            f.write(fixed)
 
-        with open(file_path, "w") as f:
-            f.write(fixed_code)
-
-        info("Wrote a lint-improved version of the code to generated-code-gemini.py\n")
-
-    still_has_issues, _ = run_pylint_on_file(file_path)
-    if still_has_issues:
+    # After max rounds:
+    still_issues, _ = run_pylint_on_file()
+    if still_issues:
         error("\nThere are still lint errors/warnings.\n")
     else:
         success("\nAmazing. No lint errors/warnings.\n")
 
 
-def main() -> None:
-    configure_gemini()
+# ---------- GitIngest Integration ----------
+def handle_github_option():
+    """
+    Handle option 2: ingest repo + ask Gemini 2.5 Pro to fix/explain.
+    """
 
+    info("\nGive me the full url of a public Github repository:\n")
+    repo_url = input("> ").strip()
+
+    info("\nTell me what you want me to fix/change/explain in that repository:\n")
+    user_instruction = input("> ").strip()
+
+    info("\nIngesting repository with GitIngest (please wait)...\n")
+
+    try:
+        repo_str = ingest(repo_url)
+        success("Repository ingested successfully!\n")
+
+        pro_model = genai.GenerativeModel("gemini-2.5-pro")
+
+        prompt = f"""
+The user wants the following change/explanation in the repository:
+
+\"\"\"{user_instruction}\"\"\"
+
+Here is the repository content:
+
+--- REPO CONTENT START ---
+{repo_str}
+--- REPO CONTENT END ---
+
+Your task:
+- Analyze the repository
+- Provide fixes, improvements, or explanations
+- Keep answer clean, structured, and technical
+
+Respond now:
+"""
+
+        response = pro_model.generate_content(prompt)
+
+        print(Fore.GREEN + "\n===== GEMINI 2.5 PRO RESPONSE =====\n")
+        print(response.text)
+        print("\n====================================\n")
+
+        success("Request completed.\n")
+
+    except Exception as e:
+        error(f"[ERROR] Failed to ingest repository or call Gemini: {e}\n")
+
+
+# ---------- Main ----------
+def main():
+    configure_gemini()
     model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
     while True:
@@ -280,63 +271,50 @@ def main() -> None:
                 "\nDescribe me which python program you want me to develop:\n\n> "
             )
 
-            info("\nGenerating program...")
+            info("Generating program...")
             code = generate_program_with_gemini(description, model)
 
-            for attempt in tqdm(
-                range(1, 6),
-                desc="Run & Fix Attempts",
-                unit="attempt",
-            ):
-                info(f"\nRunning attempt {attempt}...")
-                return_code, out, err, before_time = run_generated_code()
+            # Runtime fix attempts
+            for attempt in tqdm(range(1, 6), desc="Run & Fix Attempts"):
+                rc, out, err, before = run_generated_code()
 
-                if return_code == 0:
-                    print(Fore.GREEN + "\n===== PROGRAM OUTPUT =====")
+                if rc == 0:
+                    success("Program executed successfully!")
                     print(out)
-                    success("\nThe generated code executed successfully!")
 
+                    # Optimization
                     optimize_code_with_gemini(model, code)
+                    rc2, out2, err2, after = run_generated_code()
 
-                    info("Running optimized version...")
-                    rc2, out2, err2, after_time = run_generated_code()
-
-                    if rc2 == 0 and after_time < before_time:
+                    if rc2 == 0 and after < before:
                         success(
-                            f"\nCode running time optimized! "
-                            f"It now runs in {after_time:.2f} ms, while before it was {before_time:.2f} ms"
+                            f"Runtime optimized! Before: {before:.2f} ms → After: {after:.2f} ms"
                         )
                     else:
-                        warn("\nOptimization did not improve the running time.")
+                        warn("Optimization didn't improve speed.")
 
+                    # Lint phase
                     lint_and_fix_with_gemini(model)
 
                     return
 
-                error("\nProgram failed!")
+                error("Program failed!")
                 print(err)
 
                 if attempt == 5:
-                    error(
-                        "\nSorry master, I have failed you. I can’t create this program without issues."
-                    )
+                    error("Sorry master, I have failed you. Cannot create a working program.")
                     return
 
-                info("\nAsking Gemini to fix the code based on the error...")
-                with open("generated-code-gemini.py", "r") as f:
-                    current_code = f.read()
-                code = fix_code_with_gemini(model, current_code, err)
-
-            break
+                code = fix_code_with_gemini(model, code, err)
 
         elif choice == "2":
-            warn("\nNot implemented yet.\n")
+            handle_github_option()
 
         elif choice == "3":
-            warn("\nNot implemented yet.\n")
+            warn("Not implemented yet.\n")
 
         else:
-            error("\nInvalid choice. Please try again.\n")
+            error("Invalid choice. Try again.\n")
 
 
 if __name__ == "__main__":
