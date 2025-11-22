@@ -7,6 +7,10 @@ import google.generativeai as genai
 from colorama import init, Fore, Style
 from tqdm import tqdm
 from gitingest import ingest
+import mss
+import cv2
+import numpy as np
+from rapidocr_onnxruntime import RapidOCR
 
 init(autoreset=True)
 
@@ -45,7 +49,8 @@ def show_menu():
     print(Fore.MAGENTA + "\nI'm Mega Coder. What would you like me to do today?\n")
     print("1. Develop a python program.")
     print("2. Fix/change something in a Github repository.")
-    print("3. Look at my screen and give me realtime coding tips.\n")
+    print("3. Look at my screen and give me realtime coding tips.")
+    print("4. Exit.\n")
 
 
 # ---------- Code Execution ----------
@@ -95,7 +100,6 @@ Important requirements:
     response = model.generate_content(prompt)
     code = response.text.replace("```python", "").replace("```", "").strip()
 
-    # initial corruption only
     code = corrupt_code_randomly(code)
 
     with open("generated-code-gemini.py", "w") as f:
@@ -161,7 +165,7 @@ def run_pylint_on_file(filepath="generated-code-gemini.py"):
 def lint_and_fix_with_gemini(model, max_rounds=3):
     info("\nStarting pylint lint check...\n")
 
-    for round_idx in tqdm(range(1, max_rounds + 1), desc="Lint Fixing Progress"):
+    for round_idx in range(1, max_rounds + 1):
         has_issues, report = run_pylint_on_file()
 
         if not has_issues:
@@ -198,7 +202,6 @@ Rules:
         with open("generated-code-gemini.py", "w") as f:
             f.write(fixed)
 
-    # After max rounds:
     still_issues, _ = run_pylint_on_file()
     if still_issues:
         error("\nThere are still lint errors/warnings.\n")
@@ -208,10 +211,6 @@ Rules:
 
 # ---------- GitIngest Integration ----------
 def handle_github_option():
-    """
-    Handle option 2: ingest repo + ask Gemini 2.5 Pro to fix/explain.
-    """
-
     info("\nGive me the full url of a public Github repository:\n")
     repo_url = input("> ").strip()
 
@@ -257,14 +256,82 @@ Respond now:
         error(f"[ERROR] Failed to ingest repository or call Gemini: {e}\n")
 
 
-# ---------- Main ----------
+# ---------- Screen Capture & OCR ----------
+def is_code_text(text: str) -> bool:
+    keywords = [
+        "def ", "class ", "import ", "from ", "return ",
+        "try:", "except", "for ", "while ", "=", "{", "}", ":", "    "
+    ]
+    return any(k in text for k in keywords)
+
+
+def handle_screen_option():
+    info("\nPerfect. Show me your screen and I will be giving you tips on how to improve the code I see.\n")
+    info("Press CTRL+C to stop.\n")
+
+    ocr = RapidOCR()
+    sct = mss.mss()
+
+    previous_text = ""
+
+    try:
+        while True:
+            screenshot = sct.grab(sct.monitors[1])
+            img = np.array(screenshot)
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+            # OCR extraction
+            result, _ = ocr(img)
+            extracted = "\n".join([r[1] for r in result]) if result else ""
+            extracted = extracted.strip()
+
+            # If text looks like code AND changed from last frame
+            if extracted and extracted != previous_text and is_code_text(extracted):
+                info("\nDetected NEW code on screen. Sending to Gemini 2.5 Flash-Lite...\n")
+
+                flash_model = genai.GenerativeModel("gemini-2.5-flash-lite")
+
+                prompt = f"""
+You are a coding assistant. The user is showing you a snippet of code on their screen.
+
+Here is the code that appeared:
+
+\"\"\"{extracted}\"\"\"
+
+Give helpful, practical code improvement tips:
+- Suggest optimizations
+- Show possible bugs
+- Recommend refactors
+- Explain your reasoning clearly
+
+Respond now:
+"""
+
+                try:
+                    response = flash_model.generate_content(prompt)
+
+                    print(Fore.GREEN + "\n====== CODE IMPROVEMENT TIPS ======\n")
+                    print(response.text)
+                    print("\n===================================\n")
+
+                except Exception as e:
+                    error(f"[ERROR] Gemini API error: {e}")
+
+                previous_text = extracted
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        warn("\nStopped screen monitoring.\n")
+
+
 def main():
     configure_gemini()
     model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
     while True:
         show_menu()
-        choice = input(Fore.BLUE + "Choose an option (1/2/3): ").strip()
+        choice = input(Fore.BLUE + "Choose an option (1/2/3/4): ").strip()
 
         if choice == "1":
             description = input(
@@ -275,46 +342,54 @@ def main():
             code = generate_program_with_gemini(description, model)
 
             # Runtime fix attempts
-            for attempt in tqdm(range(1, 6), desc="Run & Fix Attempts"):
-                rc, out, err, before = run_generated_code()
+            with tqdm(total=5, desc="Run & Fix Attempts") as pbar:
+                for attempt in range(1, 6):
+                    rc, out, err, before = run_generated_code()
 
-                if rc == 0:
-                    success("Program executed successfully!")
-                    print(out)
+                    if rc == 0:
+                        success("Program executed successfully!")
+                        print(out)
 
-                    # Optimization
-                    optimize_code_with_gemini(model, code)
-                    rc2, out2, err2, after = run_generated_code()
+                        optimize_code_with_gemini(model, code)
+                        rc2, out2, err2, after = run_generated_code()
 
-                    if rc2 == 0 and after < before:
-                        success(
-                            f"Runtime optimized! Before: {before:.2f} ms → After: {after:.2f} ms"
-                        )
-                    else:
-                        warn("Optimization didn't improve speed.")
+                        if rc2 == 0 and after < before:
+                            success(
+                                f"Runtime optimized! Before: {before:.2f} ms → After: {after:.2f} ms"
+                            )
+                        else:
+                            warn("Optimization didn't improve speed.")
 
-                    # Lint phase
-                    lint_and_fix_with_gemini(model)
+                        lint_and_fix_with_gemini(model)
+                        break
 
-                    return
+                    error("Program failed!")
+                    print(err)
 
-                error("Program failed!")
-                print(err)
+                    if attempt == 5:
+                        error("Sorry master, I have failed you. Cannot create a working program.")
+                        break
 
-                if attempt == 5:
-                    error("Sorry master, I have failed you. Cannot create a working program.")
-                    return
+                    code = fix_code_with_gemini(model, code, err)
+                    pbar.update(1)
 
-                code = fix_code_with_gemini(model, code, err)
+            continue
 
         elif choice == "2":
             handle_github_option()
+            continue
 
         elif choice == "3":
-            warn("Not implemented yet.\n")
+            handle_screen_option()
+            continue
+
+        elif choice == "4":
+            success("Goodbye!")
+            break
 
         else:
             error("Invalid choice. Try again.\n")
+            continue
 
 
 if __name__ == "__main__":
