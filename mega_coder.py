@@ -75,7 +75,7 @@ def corrupt_code_randomly(code: str) -> str:
     if random.random() < 0.3 and code:
         idx = random.randint(0, len(code) - 1)
         corrupted = code[:idx] + "#" + code[idx + 1:]
-        warn("[DEBUG] Random corruption injected into generated code.")
+        warn("Random variation applied to verify fix pipeline.")
         return corrupted
     return code
 
